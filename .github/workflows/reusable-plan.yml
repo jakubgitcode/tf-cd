@@ -45,6 +45,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      use_oidc:
+        description: 'Use OIDC auth (true) or SPN client secret (false)'
+        required: false
+        type: boolean
+        default: false
 
   workflow_call:
     inputs:
@@ -69,6 +74,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      use_oidc:
+        description: 'Use OIDC auth (true) or SPN client secret (false)'
+        required: false
+        type: boolean
+        default: false
     outputs:
       plan_exit_code:
         description: 'Exit code: 0=no changes, 1=error, 2=changes detected'
@@ -78,11 +88,21 @@ on:
         value: ${{ jobs.plan.outputs.has_changes }}
     secrets:
       AZURE_CLIENT_ID:
-        required: true
+        required: false
+      AZURE_CLIENT_SECRET:
+        required: false
       AZURE_SUBSCRIPTION_ID:
-        required: true
+        required: false
       AZURE_TENANT_ID:
-        required: true
+        required: false
+      ARM_CLIENT_ID:
+        required: false
+      ARM_CLIENT_SECRET:
+        required: false
+      ARM_SUBSCRIPTION_ID:
+        required: false
+      ARM_TENANT_ID:
+        required: false
 
 permissions:
   id-token: write
@@ -93,13 +113,37 @@ jobs:
     name: '🔐 Test Azure Credentials'
     runs-on: ubuntu-latest
     steps:
-      - name: Azure Login Test
-        uses: azure/login@v1
+      - name: Validate Auth Inputs
+        run: |
+          CLIENT_ID="${{ secrets.AZURE_CLIENT_ID || secrets.ARM_CLIENT_ID }}"
+          SUBSCRIPTION_ID="${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.ARM_SUBSCRIPTION_ID }}"
+          TENANT_ID="${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}"
+          CLIENT_SECRET="${{ secrets.AZURE_CLIENT_SECRET || secrets.ARM_CLIENT_SECRET }}"
+
+          if [ -z "$CLIENT_ID" ] || [ -z "$SUBSCRIPTION_ID" ] || [ -z "$TENANT_ID" ]; then
+            echo "Missing required credentials: client/subscription/tenant id"
+            exit 1
+          fi
+
+          if [ "${{ inputs.use_oidc }}" = "false" ] && [ -z "$CLIENT_SECRET" ]; then
+            echo "Client secret is required when use_oidc=false"
+            exit 1
+          fi
+
+      - name: Azure Login Test (OIDC)
+        if: ${{ inputs.use_oidc == true }}
+        uses: azure/login@v3
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          #subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          allow-no-subscriptions: true
+          client-id: ${{ secrets.AZURE_CLIENT_ID || secrets.ARM_CLIENT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.ARM_SUBSCRIPTION_ID }}
+          # allow-no-subscriptions: true
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}
+
+      - name: Azure Login Test (SPN)
+        if: ${{ inputs.use_oidc == false }}
+        uses: azure/login@v3
+        with:
+          creds: '{"clientId":"${{ secrets.AZURE_CLIENT_ID || secrets.ARM_CLIENT_ID }}","clientSecret":"${{ secrets.AZURE_CLIENT_SECRET || secrets.ARM_CLIENT_SECRET }}","subscriptionId":"${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.ARM_SUBSCRIPTION_ID }}","tenantId":"${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}"}'
     continue-on-error: true
 
   plan:
@@ -112,10 +156,9 @@ jobs:
       run:
         working-directory: ${{ inputs.working_directory }}
     env:
-      ARM_CLIENT_ID: "${{ secrets.AZURE_CLIENT_ID }}"
-      ARM_SUBSCRIPTION_ID: "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
-      ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID }}"
-      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: "${{ secrets.AZURE_CLIENT_ID || secrets.ARM_CLIENT_ID }}"
+      ARM_SUBSCRIPTION_ID: "${{ secrets.AZURE_SUBSCRIPTION_ID || secrets.ARM_SUBSCRIPTION_ID }}"
+      ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}"
 
     steps:
       - name: Checkout (caller repo)
@@ -126,6 +169,15 @@ jobs:
         with:
           terraform_version: ${{ inputs.terraform_version }}
           terraform_wrapper: false
+
+      - name: Configure Terraform Auth Env
+        run: |
+          if [ "${{ inputs.use_oidc }}" = "true" ]; then
+            echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
+          else
+            echo "ARM_CLIENT_SECRET=${{ secrets.AZURE_CLIENT_SECRET || secrets.ARM_CLIENT_SECRET }}" >> "$GITHUB_ENV"
+            echo "ARM_USE_OIDC=false" >> "$GITHUB_ENV"
+          fi
 
       - name: Terraform Init
         run: terraform init -backend-config="key=${{ inputs.backend_key }}"
