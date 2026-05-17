@@ -16,6 +16,36 @@
 name: 'Reusable — Terraform Plan'
 
 on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment name (dev, test, prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      working_directory:
+        description: 'Ścieżka do katalogu Terraform (np. ./infra)'
+        required: true
+        type: string
+        default: './infra'
+      tfvars_file:
+        description: 'Ścieżka do pliku tfvars'
+        required: true
+        type: string
+        default: 'environments/dev.tfvars'
+      backend_key:
+        description: 'Klucz state w backendzie'
+        required: true
+        type: string
+      terraform_version:
+        description: 'Wersja Terraform'
+        required: false
+        type: string
+        default: 'latest'
+
   workflow_call:
     inputs:
       environment:

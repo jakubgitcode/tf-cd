@@ -16,6 +16,36 @@
 name: 'Reusable — Terraform Apply'
 
 on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment name (dev, test, prod)'
+        required: true
+        type: choice
+        options:
+          - dev
+          - test
+          - prod
+      github_environment:
+        description: 'GitHub Environment name (z approval gate)'
+        required: false
+        type: string
+        default: ''
+      working_directory:
+        description: 'Ścieżka do katalogu Terraform'
+        required: true
+        type: string
+        default: './infra'
+      backend_key:
+        description: 'Klucz state w backendzie'
+        required: true
+        type: string
+      terraform_version:
+        description: 'Wersja Terraform'
+        required: false
+        type: string
+        default: 'latest'
+
   workflow_call:
     inputs:
       environment:
@@ -35,6 +65,7 @@ on:
         description: 'Klucz state w backendzie'
         required: true
         type: string
+        default: 'cross-repo/dev.terraform.tfstate'
       terraform_version:
         description: 'Wersja Terraform'
         required: false
