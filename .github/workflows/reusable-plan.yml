@@ -45,6 +45,16 @@ on:
         required: false
         type: string
         default: 'latest'
+      source_repository:
+        description: 'Repository with Terraform code (owner/repo). Empty = current/caller repo.'
+        required: false
+        type: string
+        default: ''
+      source_ref:
+        description: 'Git ref in source_repository. Empty = current ref.'
+        required: false
+        type: string
+        default: ''
       use_oidc:
         description: 'Use OIDC auth (true) or SPN client secret (false)'
         required: false
@@ -74,6 +84,16 @@ on:
         required: false
         type: string
         default: 'latest'
+      source_repository:
+        description: 'Repository with Terraform code (owner/repo). Empty = current/caller repo.'
+        required: false
+        type: string
+        default: ''
+      source_ref:
+        description: 'Git ref in source_repository. Empty = current ref.'
+        required: false
+        type: string
+        default: ''
       use_oidc:
         description: 'Use OIDC auth (true) or SPN client secret (false)'
         required: false
@@ -102,6 +122,8 @@ on:
       ARM_SUBSCRIPTION_ID:
         required: false
       ARM_TENANT_ID:
+        required: false
+      SOURCE_REPO_TOKEN:
         required: false
 
 permissions:
@@ -162,8 +184,19 @@ jobs:
       ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}"
 
     steps:
-      - name: Checkout (caller repo)
+      - name: Checkout source repo (current/caller)
+        if: ${{ inputs.source_repository == '' || inputs.source_repository == github.repository }}
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref_name }}
+
+      - name: Checkout source repo (cross-repo)
+        if: ${{ inputs.source_repository != '' && inputs.source_repository != github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3

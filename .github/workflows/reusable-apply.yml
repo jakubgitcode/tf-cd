@@ -45,6 +45,21 @@ on:
         required: false
         type: string
         default: 'latest'
+      source_repository:
+        description: 'Repository with Terraform code (owner/repo). Empty = current/caller repo.'
+        required: false
+        type: string
+        default: ''
+      source_ref:
+        description: 'Git ref in source_repository. Empty = current ref.'
+        required: false
+        type: string
+        default: ''
+      plan_run_id:
+        description: 'Workflow run ID of the plan workflow when apply is triggered separately.'
+        required: false
+        type: string
+        default: ''
       use_oidc:
         description: 'Use OIDC auth (true) or SPN client secret (false)'
         required: false
@@ -75,6 +90,21 @@ on:
         required: false
         type: string
         default: 'latest'
+      source_repository:
+        description: 'Repository with Terraform code (owner/repo). Empty = current/caller repo.'
+        required: false
+        type: string
+        default: ''
+      source_ref:
+        description: 'Git ref in source_repository. Empty = current ref.'
+        required: false
+        type: string
+        default: ''
+      plan_run_id:
+        description: 'Workflow run ID of the plan workflow when apply is triggered separately.'
+        required: false
+        type: string
+        default: ''
       use_oidc:
         description: 'Use OIDC auth (true) or SPN client secret (false)'
         required: false
@@ -97,9 +127,12 @@ on:
         required: false
       ARM_TENANT_ID:
         required: false
+      SOURCE_REPO_TOKEN:
+        required: false
 
 permissions:
   id-token: write
+  actions: read
   contents: read
 
 jobs:
@@ -155,8 +188,19 @@ jobs:
       ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID || secrets.ARM_TENANT_ID }}"
 
     steps:
-      - name: Checkout (caller repo)
+      - name: Checkout source repo (current/caller)
+        if: ${{ inputs.source_repository == '' || inputs.source_repository == github.repository }}
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.ref_name }}
+
+      - name: Checkout source repo (cross-repo)
+        if: ${{ inputs.source_repository != '' && inputs.source_repository != github.repository }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.source_repository }}
+          ref: ${{ inputs.source_ref || 'main' }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN || github.token }}
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -173,11 +217,23 @@ jobs:
             echo "ARM_USE_OIDC=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Download Plan Artifact
+      - name: Download Plan Artifact (current run)
+        if: ${{ inputs.plan_run_id == '' }}
         uses: actions/download-artifact@v4
         with:
           name: tfplan-${{ inputs.environment }}-${{ github.sha }}
           path: ${{ inputs.working_directory }}
+
+      - name: Download Plan Artifact (separate run)
+        if: ${{ inputs.plan_run_id != '' }}
+        uses: actions/download-artifact@v8
+        with:
+          pattern: tfplan-${{ inputs.environment }}-*
+          path: ${{ inputs.working_directory }}
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ inputs.plan_run_id }}
 
       - name: Terraform Init
         run: terraform init -backend-config="key=${{ inputs.backend_key }}"
