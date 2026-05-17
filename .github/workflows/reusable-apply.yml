@@ -1,0 +1,116 @@
+# ==================================================
+# Reusable Workflow: Terraform Apply
+# ==================================================
+# Centralne repo CD — wywoływany TYLKO po sukcesie planu.
+# Pobiera artifact z planem i wykonuje apply.
+#
+# Wywołanie:
+#   uses: TWOJA-ORG/przyklad_blok4_drugie_cd/.github/workflows/reusable-apply.yml@main
+#   with:
+#     environment: dev
+#     github_environment: production     # opcjonalnie: z approval
+#     working_directory: ./infra
+#     backend_key: myproject/dev.terraform.tfstate
+#   secrets: inherit
+
+name: 'Reusable — Terraform Apply'
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment name (dev, test, prod)'
+        required: true
+        type: string
+      github_environment:
+        description: 'GitHub Environment name (z approval gate, np. production)'
+        required: false
+        type: string
+        default: ''
+      working_directory:
+        description: 'Ścieżka do katalogu Terraform'
+        required: true
+        type: string
+      backend_key:
+        description: 'Klucz state w backendzie'
+        required: true
+        type: string
+      terraform_version:
+        description: 'Wersja Terraform'
+        required: false
+        type: string
+        default: 'latest'
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-credentials:
+    name: '🔐 Test Azure Credentials'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login Test
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          #subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+    continue-on-error: true
+
+  apply:
+    name: 'Apply (${{ inputs.environment }})'
+    runs-on: ubuntu-latest
+    # environment — ustawione dynamicznie; jeśli puste, brak approval gate
+    environment: ${{ inputs.github_environment || inputs.environment }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      ARM_CLIENT_ID: "${{ secrets.AZURE_CLIENT_ID }}"
+      ARM_SUBSCRIPTION_ID: "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+      ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID }}"
+      ARM_USE_OIDC: "true"
+
+    steps:
+      - name: Checkout (caller repo)
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Download Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.sha }}
+          path: ${{ inputs.working_directory }}
+
+      - name: Terraform Init
+        run: terraform init -backend-config="key=${{ inputs.backend_key }}"
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve ${{ inputs.environment }}.tfplan
+
+      - name: Apply Summary
+        if: always()
+        run: |
+          echo "## 🚀 Terraform Apply — ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametr | Wartość |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Środowisko | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Actor | \`${{ github.actor }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Data | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | **${{ job.status }}** |" >> $GITHUB_STEP_SUMMARY

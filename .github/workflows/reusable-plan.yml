@@ -1,0 +1,157 @@
+# ==================================================
+# Reusable Workflow: Terraform Plan
+# ==================================================
+# Centralne repo CD — wywoływany przez repozytoria z kodem Terraform.
+# Wykonuje: init → plan → upload artifact → job summary
+#
+# Wywołanie:
+#   uses: TWOJA-ORG/przyklad_blok4_drugie_cd/.github/workflows/reusable-plan.yml@main
+#   with:
+#     environment: dev
+#     working_directory: ./infra
+#     tfvars_file: environments/dev.tfvars
+#     backend_key: myproject/dev.terraform.tfstate
+#   secrets: inherit    # lub jawne sekrety
+
+name: 'Reusable — Terraform Plan'
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: 'Target environment name (dev, test, prod)'
+        required: true
+        type: string
+      working_directory:
+        description: 'Ścieżka do katalogu Terraform (np. ./infra)'
+        required: true
+        type: string
+      tfvars_file:
+        description: 'Ścieżka do pliku tfvars (relative to working_directory)'
+        required: true
+        type: string
+      backend_key:
+        description: 'Klucz state w backendzie (np. myapp/dev.terraform.tfstate)'
+        required: true
+        type: string
+      terraform_version:
+        description: 'Wersja Terraform (opcjonalna, default: latest)'
+        required: false
+        type: string
+        default: 'latest'
+    outputs:
+      plan_exit_code:
+        description: 'Exit code: 0=no changes, 1=error, 2=changes detected'
+        value: ${{ jobs.plan.outputs.exit_code }}
+      has_changes:
+        description: 'Czy plan wykrył zmiany (true/false)'
+        value: ${{ jobs.plan.outputs.has_changes }}
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-credentials:
+    name: '🔐 Test Azure Credentials'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure Login Test
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          #subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+    continue-on-error: true
+
+  plan:
+    name: 'Plan (${{ inputs.environment }})'
+    runs-on: ubuntu-latest
+    outputs:
+      exit_code: ${{ steps.plan.outputs.exit_code }}
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    env:
+      ARM_CLIENT_ID: "${{ secrets.AZURE_CLIENT_ID }}"
+      ARM_SUBSCRIPTION_ID: "${{ secrets.AZURE_SUBSCRIPTION_ID }}"
+      ARM_TENANT_ID: "${{ secrets.AZURE_TENANT_ID }}"
+      ARM_USE_OIDC: "true"
+
+    steps:
+      - name: Checkout (caller repo)
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ inputs.terraform_version }}
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init -backend-config="key=${{ inputs.backend_key }}"
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan \
+            -detailed-exitcode \
+            -no-color \
+            -var-file=${{ inputs.tfvars_file }} \
+            -out=${{ inputs.environment }}.tfplan \
+            2>&1 | tee plan_output.txt
+          PLAN_EXIT=${PIPESTATUS[0]}
+          echo "exit_code=${PLAN_EXIT}" >> "$GITHUB_OUTPUT"
+
+          if [ $PLAN_EXIT -eq 0 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          elif [ $PLAN_EXIT -eq 2 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Plan Summary
+        if: always()
+        run: |
+          EXIT="${{ steps.plan.outputs.exit_code }}"
+          STATUS="✅ No changes"
+          [ "$EXIT" = "2" ] && STATUS="📝 Changes detected"
+          [ "$EXIT" = "1" ] && STATUS="❌ Error"
+
+          echo "## 📋 Terraform Plan — ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parametr | Wartość |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Środowisko | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Status | ${STATUS} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Exit code | \`${EXIT}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend key | \`${{ inputs.backend_key }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```hcl' >> $GITHUB_STEP_SUMMARY
+          tail -30 plan_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Plan Artifact
+        if: steps.plan.outputs.exit_code != '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}-${{ github.sha }}
+          path: |
+            ${{ inputs.working_directory }}/${{ inputs.environment }}.tfplan
+            ${{ inputs.working_directory }}/plan_output.txt
+          retention-days: 7
+
+      - name: Fail on error
+        if: steps.plan.outputs.exit_code == '1'
+        run: exit 1
